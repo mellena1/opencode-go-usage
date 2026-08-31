@@ -36,6 +36,7 @@ export interface ResolvedKey {
 
 export type UsageErrorKind =
   | "no-key"
+  | "config"
   | "unauthorized"
   | "no-subscription"
   | "bad-response"
@@ -101,8 +102,10 @@ export async function fetchUsage(
   apiKey: string,
   options: { baseUrl?: string; signal?: AbortSignal } = {},
 ): Promise<GoUsage> {
-  const baseUrl = stripTrailingSlashes(
-    (options.baseUrl ?? DEFAULT_BASE_URL).trim() || DEFAULT_BASE_URL,
+  const baseUrl = assertSecureBaseUrl(
+    stripTrailingSlashes(
+      (options.baseUrl ?? DEFAULT_BASE_URL).trim() || DEFAULT_BASE_URL,
+    ),
   );
   const url = `${baseUrl}/v1/usage`;
 
@@ -113,6 +116,9 @@ export async function fetchUsage(
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
       },
+      // Never follow a redirect with the bearer token attached; if the host
+      // ever replies 3xx (e.g. after a compromise or DNS hijack), fail closed.
+      redirect: "error",
       signal: options.signal,
     });
   } catch {
@@ -184,6 +190,33 @@ function parseUsage(body: unknown): GoUsage | undefined {
 
 function stripTrailingSlashes(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+/**
+ * The API key is a credential, so it must only ever be sent over TLS. `http://`
+ * is tolerated solely for localhost/loopback, which the `baseUrl` option exists
+ * for (local testing against a mock server, for example).
+ */
+function assertSecureBaseUrl(baseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new UsageError("config", `Invalid baseUrl: "${baseUrl}"`);
+  }
+  if (parsed.protocol === "https:") return baseUrl;
+  if (parsed.protocol === "http:") {
+    const host = parsed.hostname.toLowerCase();
+    const isLoopback =
+      host === "localhost" ||
+      host === "::1" ||
+      /^127(?:\.\d{1,3}){3}$/.test(host);
+    if (isLoopback) return baseUrl;
+  }
+  throw new UsageError(
+    "config",
+    "baseUrl must use https; http is only allowed for localhost/loopback",
+  );
 }
 
 type AuthEntry = { key?: unknown; apiKey?: unknown; [key: string]: unknown };

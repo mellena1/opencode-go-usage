@@ -157,6 +157,46 @@ describe("fetchUsage", () => {
     expect(requestedUrl).toBe("https://example.com/go/v1/usage");
   });
 
+  test("refuses a plain-http base URL so the key is never sent in cleartext", async () => {
+    const error = await fetchUsage("test-key", {
+      baseUrl: "http://usage.example.com",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(UsageError);
+    expect((error as UsageError).kind).toBe("config");
+  });
+
+  test("allows http only for localhost and loopback addresses", async () => {
+    for (const baseUrl of ["http://localhost:8787", "http://127.0.0.1:8787"]) {
+      let requestedUrl = "";
+      installFetch((url) => {
+        requestedUrl = String(url);
+        return new Response(usageBody({ rolling: 1 }), { status: 200 });
+      });
+      await fetchUsage("test-key", { baseUrl });
+      expect(requestedUrl).toBe(`${baseUrl}/v1/usage`);
+    }
+  });
+
+  test("rejects an unparseable base URL", async () => {
+    const error = await fetchUsage("test-key", { baseUrl: "not a url" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as UsageError).kind).toBe("config");
+  });
+
+  test("does not follow redirects, so the bearer token is never forwarded", async () => {
+    let redirectSetting: string | undefined;
+    installFetch((_url, init) => {
+      redirectSetting = init?.redirect;
+      return new Response(usageBody({ rolling: 1 }), { status: 200 });
+    });
+
+    await fetchUsage("test-key");
+    expect(redirectSetting).toBe("error");
+  });
+
   test("clamps percent values to 0..100", async () => {
     installFetch(() => new Response(usageBody({ rolling: 150, weekly: -5 }), { status: 200 }));
 

@@ -40,6 +40,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "overrides": {
+    "@babel/core": "^7.29.1"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "beta"
   },

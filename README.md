@@ -91,7 +91,7 @@ Add the plugin to the `plugins` list in your `opencode.json(c)`:
 | ------ | ---- | ------- | ----------- |
 | `apiKey` | `string` | auto-detected | Go API key override. Rarely needed — the key opencode already uses is found automatically. |
 | `refreshSeconds` | `number` | `300` | Refresh interval (clamped to a 30s minimum). |
-| `baseUrl` | `string` | `https://opencode.ai/zen/go` | Usage API base; `/v1/usage` is appended. Mostly for local testing. |
+| `baseUrl` | `string` | `https://opencode.ai/zen/go` | Usage API base; `/v1/usage` is appended. Mostly for local testing — HTTP is allowed only for localhost/loopback, everything else must be `https:` so the API key is never sent in cleartext. |
 | `keybinds.refresh` | `string \| false` | `ctrl+alt+g` | Keybinding for the refresh command (`false` disables the binding). |
 
 Example with a custom cadence:
