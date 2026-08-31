@@ -1,0 +1,60 @@
+{
+  "name": "@mellena1/opencode-go-usage",
+  "version": "0.1.0",
+  "description": "OpenCode v2 TUI plugin that shows your OpenCode Go subscription usage (5h / weekly / monthly windows) in the sidebar, fetched from the official /zen/go/v1/usage API.",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "mellena1",
+    "url": "https://github.com/mellena1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mellena1/opencode-go-usage.git"
+  },
+  "homepage": "https://github.com/mellena1/opencode-go-usage#readme",
+  "bugs": {
+    "url": "https://github.com/mellena1/opencode-go-usage/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "plugin",
+    "go",
+    "usage",
+    "quota",
+    "sidebar"
+  ],
+  "files": ["src"],
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/index.ts",
+    "./tui": "./src/tui.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "bun test",
+    "prepublishOnly": "bun run typecheck && bun test"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "beta"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.9",
+    "@opentui/solid": ">=0.5.9",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/theme": "0.0.0-beta-18743",
+    "@opentui/core": "0.5.9",
+    "@opentui/solid": "0.5.9",
+    "@types/bun": "^1.4.0",
+    "@types/node": "^24.0.0",
+    "solid-js": "1.9.15",
+    "typescript": "^5.8.2"
+  }
+}
