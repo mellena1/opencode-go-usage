@@ -124,16 +124,17 @@ export async function fetchUsage(
     options.timeoutMs > 0
       ? options.timeoutMs
       : DEFAULT_TIMEOUT_MS;
-  // One deadline for both phases of the exchange. The abort signal frees the
-  // socket where the runtime supports it; `withDeadline` additionally
-  // guarantees settlement even when the signal cannot interrupt the operation
-  // (e.g. a stalled response body), so callers can never hang.
+  // One deadline for both phases of the exchange, enforced with a plain timer:
+  // `AbortSignal.timeout` listeners do not reliably fire inside the TUI's
+  // embedded runtime when a fetch stalls, which wedged 0.1.0's "Loading…"
+  // state, so settlement must not depend on signal dispatch. The abort signal
+  // still frees the socket where the runtime supports it.
   const deadline = AbortSignal.timeout(timeoutMs);
   const timeoutMessage = `OpenCode Go usage request did not respond within ${timeoutMs}ms`;
 
   let response: globalThis.Response;
   try {
-    response = await withDeadline(
+    response = await withTimeout(
       fetch(url, {
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -144,7 +145,7 @@ export async function fetchUsage(
         redirect: "error",
         signal: deadline,
       }),
-      deadline,
+      timeoutMs,
       timeoutMessage,
     );
   } catch (error) {
@@ -174,7 +175,7 @@ export async function fetchUsage(
 
   let body: unknown;
   try {
-    body = await withDeadline(response.json(), deadline, timeoutMessage);
+    body = await withTimeout(response.json(), timeoutMs, timeoutMessage);
   } catch (error) {
     if (error instanceof UsageError) throw error; // the deadline fired mid-body
     throw new UsageError("bad-response", "OpenCode Go usage response was not valid JSON");
@@ -191,29 +192,23 @@ export async function fetchUsage(
 }
 
 /**
- * Settle `task` no later than `signal` fires. If the signal fires first, the
- * result rejects with a "network" `UsageError` carrying `timeoutMessage`;
- * otherwise it settles exactly like the task. The listener is removed when the
- * task settles, so a late-firing deadline after a completed read is a no-op.
+ * Settle `task` no later than `timeoutMs`, rejecting with a "network"
+ * `UsageError` carrying `timeoutMessage` if the timer fires first. The timer is
+ * cleared once the task settles. A plain `setTimeout` is used instead of an
+ * `AbortSignal` listener because signal dispatch does not reliably fire inside
+ * the TUI's embedded runtime on a stalled fetch — a hung call must still
+ * settle so the widget can never stay on "Loading…".
  */
-function withDeadline<T>(
-  task: Promise<T>,
-  signal: AbortSignal,
-  timeoutMessage: string,
-): Promise<T> {
-  if (signal.aborted) {
-    return Promise.reject(new UsageError("network", timeoutMessage));
-  }
+function withTimeout<T>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new UsageError("network", timeoutMessage));
-    signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => reject(new UsageError("network", timeoutMessage)), timeoutMs);
     task.then(
       (value) => {
-        signal.removeEventListener("abort", onAbort);
+        clearTimeout(timer);
         resolve(value);
       },
       (error) => {
-        signal.removeEventListener("abort", onAbort);
+        clearTimeout(timer);
         reject(error);
       },
     );

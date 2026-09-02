@@ -4,6 +4,7 @@ import { Plugin } from "@opencode-ai/plugin/tui";
 import type { Context } from "@opencode-ai/plugin/tui/context";
 import type { ResolvedTheme } from "@opencode-ai/theme/tui";
 import {
+  DEFAULT_TIMEOUT_MS,
   UsageError,
   clampPercent,
   fetchUsage,
@@ -17,6 +18,8 @@ const BAR_WIDTH = 12;
 const DEFAULT_REFRESH_SECONDS = 300; // 5 minutes
 const MIN_REFRESH_SECONDS = 30;
 const TICK_MS = 30_000; // countdown/relative time refresh granularity
+const WATCHDOG_MS = 10_000; // how often the refresh watchdog re-checks
+const WATCHDOG_SLACK_MS = 5_000; // grace beyond the fetch deadline before a refresh is declared wedged
 
 const WINDOW_KEYS: ReadonlyArray<{ key: keyof GoUsage; label: string }> = [
   { key: "rolling", label: "5h" },
@@ -267,6 +270,8 @@ export default Plugin.define({
     // after a newer one (or after cleanup) is discarded.
     let generation = 0;
     let notified: string | null = null;
+    /** Start time of the newest refresh, used by the watchdog below. */
+    let refreshStartedAt = 0;
 
     function notify(message: string): void {
       if (notified === message) return;
@@ -281,6 +286,7 @@ export default Plugin.define({
 
     async function refresh(): Promise<void> {
       const current = ++generation;
+      refreshStartedAt = Date.now();
 
       let key: Awaited<ReturnType<typeof resolveApiKey>>;
       try {
@@ -292,6 +298,7 @@ export default Plugin.define({
 
       if (!key) {
         // Not an operational error — just nothing to show until Go is set up.
+        refreshStartedAt = 0;
         setWidget((prev) => ({
           status: "no-key",
           usage: prev.usage,
@@ -304,6 +311,7 @@ export default Plugin.define({
         const usage = await fetchUsage(key.apiKey, { baseUrl });
         if (current !== generation) return;
         notified = null;
+        refreshStartedAt = 0;
         setWidget({
           status: "ok",
           usage,
@@ -319,6 +327,7 @@ export default Plugin.define({
               : String(error);
         notify(message);
         // Keep showing the last known values when a refresh fails.
+        refreshStartedAt = 0;
         setWidget((prev) => ({
           status: "error",
           error: message,
@@ -348,6 +357,24 @@ export default Plugin.define({
     const timer = setInterval(() => void refresh(), refreshMs);
     const tick = setInterval(() => setNow(Date.now()), TICK_MS);
 
+    // Last-resort safety net: if a refresh ever fails to settle (a pathological
+    // runtime stall beyond the fetch deadline), force the widget out of the
+    // "Loading…" state instead of leaving it stuck forever.
+    const watchdog = setInterval(() => {
+      if (refreshStartedAt === 0) return;
+      if (Date.now() - refreshStartedAt <= DEFAULT_TIMEOUT_MS + WATCHDOG_SLACK_MS) return;
+      generation++; // discard the wedged refresh's late completion
+      refreshStartedAt = 0;
+      const message = "OpenCode Go usage refresh timed out";
+      notify(message);
+      setWidget((prev) => ({
+        status: "error",
+        error: message,
+        usage: prev.usage,
+        at: prev.at,
+      }));
+    }, WATCHDOG_MS);
+
     const dispose = ctx.ui.slot({
       append: "sidebar.content",
       render: () => <UsageWidget widget={widget} now={nowMs} theme={ctx.theme} />,
@@ -357,6 +384,7 @@ export default Plugin.define({
       generation++;
       clearInterval(timer);
       clearInterval(tick);
+      clearInterval(watchdog);
       dispose();
       disposeCommands();
     };
