@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { Plugin } from "@opencode-ai/plugin/tui";
+import type { Context } from "@opencode-ai/plugin/tui/context";
 import type { ResolvedTheme } from "@opencode-ai/theme/tui";
 import {
   UsageError,
@@ -36,6 +37,38 @@ interface WidgetState {
   error?: string;
   /** Timestamp of the last successful fetch. */
   at?: number;
+}
+
+/**
+ * Registers the refresh command for the whole TUI lifetime. It exists only to
+ * own the keymap layer: `keymap.layer` must be called from inside the TUI
+ * component tree (setup runs outside it, and the Keymap.Provider is
+ * unavailable there), and `sidebar.content` only mounts on session screens —
+ * neither would keep the command in the palette on every screen. The `app`
+ * slot is the root boundary, mounted for as long as the TUI is up.
+ */
+function CommandHost(props: {
+  keymap: Pick<Context["keymap"], "layer">;
+  refreshKey: string | false;
+  refresh: () => void;
+}): JSX.Element {
+  props.keymap.layer(() => ({
+    mode: "base",
+    commands: [
+      {
+        id: "go-usage.refresh",
+        title: "Refresh OpenCode Go usage",
+        group: "Go usage",
+        palette: true,
+        bind: props.refreshKey,
+        run: () => {
+          props.refresh();
+        },
+      },
+    ],
+  }));
+  // Renders nothing; just keeps the layer registered.
+  return <box />;
 }
 
 /** Live usage widget rendered into the session sidebar. */
@@ -295,25 +328,21 @@ export default Plugin.define({
       }
     }
 
-    // Register the refresh command for the plugin's lifetime, independent of
-    // whether the sidebar widget happens to be mounted (home screen, hidden
-    // sidebar, …) — otherwise the palette entry and keybinding would vanish
-    // with the widget. `global` keeps the command reachable in every mode.
-    ctx.keymap.layer(() => ({
-      mode: "global",
-      commands: [
-        {
-          id: "go-usage.refresh",
-          title: "Refresh OpenCode Go usage",
-          group: "Go usage",
-          palette: true,
-          bind: refreshKey,
-          run: () => {
-            void refresh();
-          },
-        },
-      ],
-    }));
+    // The refresh command lives on its own `app`-slot claim (mounted for the
+    // whole TUI lifetime), not inside the sidebar widget — `keymap.layer` can
+    // only run inside the TUI component tree, and `sidebar.content` only
+    // mounts on session screens. Registering there kept the command out of
+    // the palette on other screens.
+    const disposeCommands = ctx.ui.slot({
+      append: "app",
+      render: () => (
+        <CommandHost
+          keymap={ctx.keymap}
+          refreshKey={refreshKey}
+          refresh={() => void refresh()}
+        />
+      ),
+    });
 
     void refresh();
     const timer = setInterval(() => void refresh(), refreshMs);
@@ -329,6 +358,7 @@ export default Plugin.define({
       clearInterval(timer);
       clearInterval(tick);
       dispose();
+      disposeCommands();
     };
   },
 });
