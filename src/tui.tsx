@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, type JSX } from "solid-js";
+import { For, type JSX } from "solid-js";
 import { Plugin } from "@opencode-ai/plugin/tui";
 import type { Context } from "@opencode-ai/plugin/tui/context";
 import type { ResolvedTheme } from "@opencode-ai/theme/tui";
@@ -12,12 +12,11 @@ import {
   type GoUsage,
   type UsageWindow,
 } from "./usage.js";
-import { formatCountdown, formatRelative, progressBar } from "./format.js";
+import { formatCountdown, progressBar } from "./format.js";
 
 const BAR_WIDTH = 12;
 const DEFAULT_REFRESH_SECONDS = 300; // 5 minutes
 const MIN_REFRESH_SECONDS = 30;
-const TICK_MS = 30_000; // countdown/relative time refresh granularity
 const WATCHDOG_MS = 10_000; // how often the refresh watchdog re-checks
 const WATCHDOG_SLACK_MS = 5_000; // grace beyond the fetch deadline before a refresh is declared wedged
 
@@ -38,8 +37,6 @@ interface WidgetState {
   status: WidgetStatus;
   usage?: GoUsage;
   error?: string;
-  /** Timestamp of the last successful fetch. */
-  at?: number;
 }
 
 /**
@@ -83,28 +80,22 @@ function CommandHost(props: {
  * initial frame but not its later signal updates (the plugin and host run
  * separate reactive graphs — anomalyco/opencode#39986), so this plugin never
  * *relies* on reactive updates: `setup` remounts the claim with a fresh
- * snapshot on every refresh and every clock tick instead. Remounting is a
- * fresh initial paint, which always works.
+ * snapshot whenever data changes instead. Remounting is a fresh initial paint,
+ * which always works.
+ *
+ * To keep the sidebar layout stable, the widget always renders the same
+ * structure — header, three window rows, and a status line — regardless of
+ * state, so a remount never changes its footprint.
  */
 function UsageWidget(props: {
   state: WidgetState;
-  now: number;
   theme: ResolvedTheme;
 }): JSX.Element {
   const theme = props.theme;
   const s = props.state;
-
-  const rows = (() => {
-    const usage = s.usage;
-    if (!usage) return undefined;
-    return WINDOW_KEYS.map((window) => ({
-      label: window.label,
-      window: usage[window.key],
-    }));
-  })();
+  const usage = s.usage;
 
   const maxPercent = (() => {
-    const usage = s.usage;
     if (!usage) return undefined;
     const percents = [usage.rolling?.percent, usage.weekly?.percent, usage.monthly?.percent]
       .filter((value): value is number => typeof value === "number");
@@ -122,7 +113,7 @@ function UsageWidget(props: {
   const dot = (() => {
     if (s.status === "loading") return theme.text.subdued;
     if (s.status === "no-key") return theme.text.subdued;
-    if (s.status === "error" && !s.usage) return theme.text.feedback.error.default;
+    if (s.status === "error" && !usage) return theme.text.feedback.error.default;
     switch (level) {
       case "ok":
         return theme.text.feedback.success.default;
@@ -135,61 +126,37 @@ function UsageWidget(props: {
     }
   })();
 
-  const relative =
-    s.at !== undefined ? formatRelative(props.now, s.at) : "";
-
-  const fallback = (() => {
+  // The bottom status line: a hint, the failure reason, or nothing at all.
+  const statusLine = (() => {
+    if (s.status === "no-key") return NOT_CONFIGURED_HINT;
     if (s.status === "loading") return "Loading…";
-    if (s.status === "no-key") return NOT_CONFIGURED_HINT;
-    return s.error ?? "Unavailable";
-  })();
-
-  // A muted note shown alongside (or in place of) the usage rows when the
-  // provider is not configured or a refresh failed after prior success.
-  const note = (() => {
-    if (s.status === "no-key") return NOT_CONFIGURED_HINT;
-    if (s.status === "error" && s.usage) return s.error ?? "";
+    if (s.status === "error") return s.error ?? "Unavailable";
     return "";
   })();
 
   return (
-    <Show when={s.status !== "no-key"}>
-      <box>
-        <box flexDirection="row" gap={1}>
-          <text fg={dot}>●</text>
-          <text fg={theme.text.default}>
-            <b>Go usage</b>
-          </text>
-          <text fg={theme.text.subdued}>{relative}</text>
-        </box>
-        <Show
-          when={rows !== undefined}
-          fallback={
-            <text fg={theme.text.subdued} wrapMode="none">
-              {fallback}
-            </text>
-          }
-        >
-          <For each={rows}>
-            {(row) => (
-              <WindowRow label={row.label} window={row.window} now={props.now} theme={theme} />
-            )}
-          </For>
-        </Show>
-        {note !== "" ? (
-          <text fg={theme.text.subdued} wrapMode="none">
-            {note}
-          </text>
-        ) : null}
+    <box>
+      <box flexDirection="row" gap={1}>
+        <text fg={dot}>●</text>
+        <text fg={theme.text.default}>
+          <b>Go usage</b>
+        </text>
       </box>
-    </Show>
+      <For each={WINDOW_KEYS}>
+        {(window) => <WindowRow label={window.label} window={usage?.[window.key]} theme={theme} />}
+      </For>
+      {statusLine !== "" ? (
+        <text fg={theme.text.subdued} wrapMode="none">
+          {statusLine}
+        </text>
+      ) : null}
+    </box>
   );
 }
 
 function WindowRow(props: {
   label: string;
   window: UsageWindow | undefined;
-  now: number;
   theme: ResolvedTheme;
 }): JSX.Element {
   const theme = props.theme;
@@ -225,7 +192,7 @@ function WindowRow(props: {
         {percent === undefined ? "" : progressBar(percent, BAR_WIDTH)}
       </text>
       <text fg={theme.text.subdued} wrapMode="none">
-        {formatCountdown(props.now, props.window?.resetsAt)}
+        {formatCountdown(Date.now(), props.window?.resetsAt)}
       </text>
     </box>
   );
@@ -261,6 +228,10 @@ export default Plugin.define({
      * changes. Reactive signal writes do not repaint on the packaged CLI
      * (anomalyco/opencode#39986), but mount-time JSX evaluation and host
      * claim mounting do — so this plugin paints by remounting.
+     *
+     * Remounts are deliberately rare — only when data actually changes (a
+     * completed refresh, a watchdog hit, a status transition), roughly once
+     * per refresh interval — so the sidebar layout stays put.
      */
     let last: WidgetState | null = null;
     let disposeWidget: (() => void) | null = null;
@@ -273,9 +244,7 @@ export default Plugin.define({
         // doesn't start out empty.
         disposeWidget = ctx.ui.slot({
           append: "sidebar.content",
-          render: () => (
-            <UsageWidget state={{ status: "loading" }} now={Date.now()} theme={ctx.theme} />
-          ),
+          render: () => <UsageWidget state={{ status: "loading" }} theme={ctx.theme} />,
         });
         return;
       }
@@ -283,7 +252,7 @@ export default Plugin.define({
       const state = last;
       disposeWidget = ctx.ui.slot({
         append: "sidebar.content",
-        render: () => <UsageWidget state={state} now={Date.now()} theme={ctx.theme} />,
+        render: () => <UsageWidget state={state} theme={ctx.theme} />,
       });
     }
 
@@ -320,7 +289,7 @@ export default Plugin.define({
       if (!key) {
         // Not an operational error — just nothing to show until Go is set up.
         refreshStartedAt = 0;
-        last = { status: "no-key", usage: last?.usage, at: last?.at };
+        last = { status: "no-key" };
         renderWidget();
         return;
       }
@@ -330,7 +299,7 @@ export default Plugin.define({
         if (current !== generation) return;
         notified = null;
         refreshStartedAt = 0;
-        last = { status: "ok", usage, at: Date.now() };
+        last = { status: "ok", usage };
         renderWidget();
       } catch (error) {
         if (current !== generation) return;
@@ -343,7 +312,7 @@ export default Plugin.define({
         notify(message);
         // Keep showing the last known values when a refresh fails.
         refreshStartedAt = 0;
-        last = { status: "error", error: message, usage: last?.usage, at: last?.at };
+        last = { status: "error", error: message, usage: last?.usage };
         renderWidget();
       }
     }
@@ -364,9 +333,6 @@ export default Plugin.define({
     renderWidget();
     void refresh();
     const timer = setInterval(() => void refresh(), refreshMs);
-    // Remounting with a fresh `now` keeps the "…ago" label and countdowns
-    // moving without relying on reactive repaints.
-    const tick = setInterval(() => renderWidget(), TICK_MS);
 
     // Last-resort safety net: if a refresh ever fails to settle (a pathological
     // runtime stall beyond the fetch deadline), force the widget out of the
@@ -378,14 +344,13 @@ export default Plugin.define({
       refreshStartedAt = 0;
       const message = "OpenCode Go usage refresh timed out";
       notify(message);
-      last = { status: "error", error: message, usage: last?.usage, at: last?.at };
+      last = { status: "error", error: message, usage: last?.usage };
       renderWidget();
     }, WATCHDOG_MS);
 
     return () => {
       generation++;
       clearInterval(timer);
-      clearInterval(tick);
       clearInterval(watchdog);
       disposeWidget?.();
       disposeCommands();
