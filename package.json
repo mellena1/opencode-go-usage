@@ -1,6 +1,6 @@
 {
   "name": "@mellena1/opencode-go-usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode v2 TUI plugin that shows your OpenCode Go subscription usage (5h / weekly / monthly windows) in the sidebar, fetched from the official /zen/go/v1/usage API.",
   "type": "module",
   "license": "MIT",

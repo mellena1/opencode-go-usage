@@ -28,6 +28,9 @@ export interface GoUsage {
 
 export const DEFAULT_BASE_URL = "https://opencode.ai/zen/go";
 
+/** Hard deadline for one usage request, covering both the request and the response body read. */
+export const DEFAULT_TIMEOUT_MS = 15_000;
+
 /** A resolved API key plus where it came from (for diagnostics). */
 export interface ResolvedKey {
   apiKey: string;
@@ -97,10 +100,16 @@ export async function resolveApiKey(
   return undefined;
 }
 
-/** Fetch the usage windows for the current subscription. */
+/**
+ * Fetch the usage windows for the current subscription.
+ *
+ * The whole exchange — request and body read — is bounded by `timeoutMs`, so
+ * this never hangs: a response whose body stalls after the headers arrive is
+ * abandoned like any other network failure.
+ */
 export async function fetchUsage(
   apiKey: string,
-  options: { baseUrl?: string; signal?: AbortSignal } = {},
+  options: { baseUrl?: string; timeoutMs?: number } = {},
 ): Promise<GoUsage> {
   const baseUrl = assertSecureBaseUrl(
     stripTrailingSlashes(
@@ -109,20 +118,41 @@ export async function fetchUsage(
   );
   const url = `${baseUrl}/v1/usage`;
 
+  const timeoutMs =
+    typeof options.timeoutMs === "number" &&
+    Number.isFinite(options.timeoutMs) &&
+    options.timeoutMs > 0
+      ? options.timeoutMs
+      : DEFAULT_TIMEOUT_MS;
+  // One deadline for both phases of the exchange. The abort signal frees the
+  // socket where the runtime supports it; `withDeadline` additionally
+  // guarantees settlement even when the signal cannot interrupt the operation
+  // (e.g. a stalled response body), so callers can never hang.
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const timeoutMessage = `OpenCode Go usage request did not respond within ${timeoutMs}ms`;
+
   let response: globalThis.Response;
   try {
-    response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-      // Never follow a redirect with the bearer token attached; if the host
-      // ever replies 3xx (e.g. after a compromise or DNS hijack), fail closed.
-      redirect: "error",
-      signal: options.signal,
-    });
-  } catch {
-    throw new UsageError("network", `Could not reach ${url}`);
+    response = await withDeadline(
+      fetch(url, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+        },
+        // Never follow a redirect with the bearer token attached; if the host
+        // ever replies 3xx (e.g. after a compromise or DNS hijack), fail closed.
+        redirect: "error",
+        signal: deadline,
+      }),
+      deadline,
+      timeoutMessage,
+    );
+  } catch (error) {
+    if (error instanceof UsageError) throw error; // the deadline fired
+    // The deadline may have fired just as the fetch's own AbortError landed,
+    // so report a timeout when the deadline is over, a plain network failure
+    // otherwise.
+    throw new UsageError("network", deadline.aborted ? timeoutMessage : `Could not reach ${url}`);
   }
 
   // Go rejects unknown keys with an SPA-free 401 JSON body like
@@ -144,8 +174,9 @@ export async function fetchUsage(
 
   let body: unknown;
   try {
-    body = await response.json();
-  } catch {
+    body = await withDeadline(response.json(), deadline, timeoutMessage);
+  } catch (error) {
+    if (error instanceof UsageError) throw error; // the deadline fired mid-body
     throw new UsageError("bad-response", "OpenCode Go usage response was not valid JSON");
   }
 
@@ -157,6 +188,36 @@ export async function fetchUsage(
     );
   }
   return usage;
+}
+
+/**
+ * Settle `task` no later than `signal` fires. If the signal fires first, the
+ * result rejects with a "network" `UsageError` carrying `timeoutMessage`;
+ * otherwise it settles exactly like the task. The listener is removed when the
+ * task settles, so a late-firing deadline after a completed read is a no-op.
+ */
+function withDeadline<T>(
+  task: Promise<T>,
+  signal: AbortSignal,
+  timeoutMessage: string,
+): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(new UsageError("network", timeoutMessage));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new UsageError("network", timeoutMessage));
+    signal.addEventListener("abort", onAbort, { once: true });
+    task.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function parseUsage(body: unknown): GoUsage | undefined {

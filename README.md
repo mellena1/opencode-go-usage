@@ -23,6 +23,9 @@ mo  94%  ███████████░ 3d
   90%+ (relative to the **highest** of the three windows).
 - When a refresh fails the last known values stay visible, with a short note
   and one toast per failure episode.
+- A request that stalls — no response, or a response body that never finishes —
+  is abandoned after 15 seconds and treated like any other refresh failure, so
+  the widget never sits on "Loading…" forever.
 - If OpenCode Go isn't configured on this machine (no key in `options`, the
   `OPENCODE_API_KEY` env var, or auth.json), the widget **hides itself**
   entirely instead of showing an error.

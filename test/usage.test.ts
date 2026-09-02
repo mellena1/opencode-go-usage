@@ -259,16 +259,66 @@ describe("fetchUsage", () => {
 
     expect((await fetchFailure()).kind).toBe("network");
   });
+
+  test("abandons a request that never responds, instead of hanging", async () => {
+    // Simulates a connect/DNS/keep-alive stall: fetch itself never settles.
+    installFetch(() => new Promise<Response>(() => {}));
+
+    const started = Date.now();
+    const error = await fetchFailure({ timeoutMs: 250 });
+    const elapsed = Date.now() - started;
+
+    expect(error.kind).toBe("network");
+    expect(error.message).toMatch(/did not respond within 250ms/);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  test("abandons a response body that never finishes, instead of hanging", async () => {
+    // Headers arrive, but the body stream never closes: `response.json()`
+    // would wait forever without the deadline.
+    installFetch(() => new Response(stalledBody(), { status: 200 }));
+
+    const started = Date.now();
+    const error = await fetchFailure({ timeoutMs: 250 });
+    const elapsed = Date.now() - started;
+
+    expect(error.kind).toBe("network");
+    expect(error.message).toMatch(/did not respond within 250ms/);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  test("falls back to the default timeout for non-positive timeoutMs", async () => {
+    let requestedUrl = "";
+    installFetch((url) => {
+      requestedUrl = String(url);
+      return new Response(usageBody({ rolling: 1 }), { status: 200 });
+    });
+
+    const usage = await fetchUsage("test-key", { timeoutMs: -5 });
+    expect(usage.rolling?.percent).toBe(1);
+    expect(requestedUrl).toBe(`${DEFAULT_BASE_URL}/v1/usage`);
+  });
 });
 
-async function fetchFailure(): Promise<UsageError> {
+async function fetchFailure(
+  options: Parameters<typeof fetchUsage>[1] = {},
+): Promise<UsageError> {
   try {
-    await fetchUsage("test-key");
+    await fetchUsage("test-key", options);
   } catch (error) {
     if (error instanceof UsageError) return error;
     throw error;
   }
   throw new Error("fetchUsage unexpectedly succeeded");
+}
+
+/** A response body that sends a partial chunk and never closes. */
+function stalledBody(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"usage":'));
+    },
+  });
 }
 
 function usageBody(percents: Record<string, number>): string {

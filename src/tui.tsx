@@ -1,7 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { Plugin } from "@opencode-ai/plugin/tui";
-import type { Context } from "@opencode-ai/plugin/tui/context";
 import type { ResolvedTheme } from "@opencode-ai/theme/tui";
 import {
   UsageError,
@@ -17,7 +16,6 @@ const BAR_WIDTH = 12;
 const DEFAULT_REFRESH_SECONDS = 300; // 5 minutes
 const MIN_REFRESH_SECONDS = 30;
 const TICK_MS = 30_000; // countdown/relative time refresh granularity
-const FETCH_TIMEOUT_MS = 15_000;
 
 const WINDOW_KEYS: ReadonlyArray<{ key: keyof GoUsage; label: string }> = [
   { key: "rolling", label: "5h" },
@@ -45,27 +43,8 @@ function UsageWidget(props: {
   widget: () => WidgetState;
   now: () => number;
   theme: ResolvedTheme;
-  keymap: Pick<Context["keymap"], "layer">;
-  refreshKey: string | false;
-  refresh: () => void;
 }): JSX.Element {
   const theme = props.theme;
-
-  props.keymap.layer(() => ({
-    mode: "base",
-    commands: [
-      {
-        id: "go-usage.refresh",
-        title: "Refresh OpenCode Go usage",
-        group: "Go usage",
-        palette: true,
-        bind: props.refreshKey,
-        run: () => {
-          props.refresh();
-        },
-      },
-    ],
-  }));
 
   const state = createMemo(() => props.widget());
   const now = createMemo(() => props.now());
@@ -289,10 +268,7 @@ export default Plugin.define({
       }
 
       try {
-        const usage = await fetchUsage(key.apiKey, {
-          baseUrl,
-          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        });
+        const usage = await fetchUsage(key.apiKey, { baseUrl });
         if (current !== generation) return;
         notified = null;
         setWidget({
@@ -319,22 +295,33 @@ export default Plugin.define({
       }
     }
 
+    // Register the refresh command for the plugin's lifetime, independent of
+    // whether the sidebar widget happens to be mounted (home screen, hidden
+    // sidebar, …) — otherwise the palette entry and keybinding would vanish
+    // with the widget. `global` keeps the command reachable in every mode.
+    ctx.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: "go-usage.refresh",
+          title: "Refresh OpenCode Go usage",
+          group: "Go usage",
+          palette: true,
+          bind: refreshKey,
+          run: () => {
+            void refresh();
+          },
+        },
+      ],
+    }));
+
     void refresh();
     const timer = setInterval(() => void refresh(), refreshMs);
     const tick = setInterval(() => setNow(Date.now()), TICK_MS);
 
     const dispose = ctx.ui.slot({
       append: "sidebar.content",
-      render: () => (
-        <UsageWidget
-          widget={widget}
-          now={nowMs}
-          theme={ctx.theme}
-          keymap={ctx.keymap}
-          refreshKey={refreshKey}
-          refresh={() => void refresh()}
-        />
-      ),
+      render: () => <UsageWidget widget={widget} now={nowMs} theme={ctx.theme} />,
     });
 
     return () => {
