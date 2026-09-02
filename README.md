@@ -144,3 +144,9 @@ straight at the TypeScript sources, so there is no build step.
 - **Unofficial endpoint**: `/zen/go/v1/usage` is not (yet) in the public Go
   docs. It is the endpoint the console uses, but if opencode changes it the
   plugin will need a small update.
+- **Host repaint bug on packaged CLI builds**: on some betas the packaged TUI
+  renders a plugin's initial frame but never repaints its signal updates
+  (separate reactive graphs — see `anomalyco/opencode#39986`). The widget
+  sidesteps this by remounting itself with a fresh snapshot on every refresh
+  and clock tick instead of relying on reactive updates, so it stays live even
+  on affected builds.

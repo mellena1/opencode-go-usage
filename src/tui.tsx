@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import { Plugin } from "@opencode-ai/plugin/tui";
 import type { Context } from "@opencode-ai/plugin/tui/context";
 import type { ResolvedTheme } from "@opencode-ai/theme/tui";
@@ -46,9 +46,10 @@ interface WidgetState {
  * Registers the refresh command for the whole TUI lifetime. It exists only to
  * own the keymap layer: `keymap.layer` must be called from inside the TUI
  * component tree (setup runs outside it, and the Keymap.Provider is
- * unavailable there), and `sidebar.content` only mounts on session screens —
- * neither would keep the command in the palette on every screen. The `app`
- * slot is the root boundary, mounted for as long as the TUI is up.
+ * unavailable there). The `app` slot is the root boundary, mounted for as long
+ * as the TUI is up. Note that on betas where the host cannot repaint plugin
+ * signals (anomalyco/opencode#39986) the layer may never become active — the
+ * refresh still happens through the timer-driven remount in `setup`.
  */
 function CommandHost(props: {
   keymap: Pick<Context["keymap"], "layer">;
@@ -74,48 +75,55 @@ function CommandHost(props: {
   return <box />;
 }
 
-/** Live usage widget rendered into the session sidebar. */
+/**
+ * Usage widget rendered into the session sidebar.
+ *
+ * Deliberately stateless: every value is derived once, at mount time, from an
+ * immutable `state` snapshot. On the packaged CLI the host repaints a plugin's
+ * initial frame but not its later signal updates (the plugin and host run
+ * separate reactive graphs — anomalyco/opencode#39986), so this plugin never
+ * *relies* on reactive updates: `setup` remounts the claim with a fresh
+ * snapshot on every refresh and every clock tick instead. Remounting is a
+ * fresh initial paint, which always works.
+ */
 function UsageWidget(props: {
-  widget: () => WidgetState;
-  now: () => number;
+  state: WidgetState;
+  now: number;
   theme: ResolvedTheme;
 }): JSX.Element {
   const theme = props.theme;
+  const s = props.state;
 
-  const state = createMemo(() => props.widget());
-  const now = createMemo(() => props.now());
-
-  const rows = createMemo(() => {
-    const usage = state().usage;
+  const rows = (() => {
+    const usage = s.usage;
     if (!usage) return undefined;
     return WINDOW_KEYS.map((window) => ({
       label: window.label,
       window: usage[window.key],
     }));
-  });
+  })();
 
-  const maxPercent = createMemo(() => {
-    const usage = state().usage;
+  const maxPercent = (() => {
+    const usage = s.usage;
     if (!usage) return undefined;
     const percents = [usage.rolling?.percent, usage.weekly?.percent, usage.monthly?.percent]
       .filter((value): value is number => typeof value === "number");
     return percents.length > 0 ? Math.max(...percents) : undefined;
-  });
+  })();
 
-  const level = createMemo((): Level => {
-    const max = maxPercent();
+  const level: Level = (() => {
+    const max = maxPercent;
     if (max === undefined) return "none";
     if (max >= 90) return "error";
     if (max >= 70) return "warning";
     return "ok";
-  });
+  })();
 
-  const dot = createMemo(() => {
-    const s = state();
+  const dot = (() => {
     if (s.status === "loading") return theme.text.subdued;
     if (s.status === "no-key") return theme.text.subdued;
     if (s.status === "error" && !s.usage) return theme.text.feedback.error.default;
-    switch (level()) {
+    switch (level) {
       case "ok":
         return theme.text.feedback.success.default;
       case "warning":
@@ -125,56 +133,52 @@ function UsageWidget(props: {
       default:
         return theme.text.subdued;
     }
-  });
+  })();
 
-  const relative = createMemo(() => {
-    const at = state().at;
-    return at !== undefined ? formatRelative(now(), at) : "";
-  });
+  const relative =
+    s.at !== undefined ? formatRelative(props.now, s.at) : "";
 
-  const fallback = createMemo(() => {
-    const s = state();
+  const fallback = (() => {
     if (s.status === "loading") return "Loading…";
     if (s.status === "no-key") return NOT_CONFIGURED_HINT;
     return s.error ?? "Unavailable";
-  });
+  })();
 
   // A muted note shown alongside (or in place of) the usage rows when the
   // provider is not configured or a refresh failed after prior success.
-  const note = createMemo(() => {
-    const s = state();
+  const note = (() => {
     if (s.status === "no-key") return NOT_CONFIGURED_HINT;
     if (s.status === "error" && s.usage) return s.error ?? "";
     return "";
-  });
+  })();
 
   return (
-    <Show when={state().status !== "no-key"}>
+    <Show when={s.status !== "no-key"}>
       <box>
         <box flexDirection="row" gap={1}>
-          <text fg={dot()}>●</text>
+          <text fg={dot}>●</text>
           <text fg={theme.text.default}>
             <b>Go usage</b>
           </text>
-          <text fg={theme.text.subdued}>{relative()}</text>
+          <text fg={theme.text.subdued}>{relative}</text>
         </box>
         <Show
-          when={rows() !== undefined}
+          when={rows !== undefined}
           fallback={
             <text fg={theme.text.subdued} wrapMode="none">
-              {fallback()}
+              {fallback}
             </text>
           }
         >
-          <For each={rows()}>
+          <For each={rows}>
             {(row) => (
-              <WindowRow label={row.label} window={row.window} now={now} theme={theme} />
+              <WindowRow label={row.label} window={row.window} now={props.now} theme={theme} />
             )}
           </For>
         </Show>
-        {note() !== "" ? (
+        {note !== "" ? (
           <text fg={theme.text.subdued} wrapMode="none">
-            {note()}
+            {note}
           </text>
         ) : null}
       </box>
@@ -185,55 +189,43 @@ function UsageWidget(props: {
 function WindowRow(props: {
   label: string;
   window: UsageWindow | undefined;
-  now: () => number;
+  now: number;
   theme: ResolvedTheme;
 }): JSX.Element {
   const theme = props.theme;
 
-  const view = createMemo(() => {
-    const raw = props.window?.percent;
-    const percent =
-      typeof raw === "number" ? Math.round(clampPercent(raw)) : undefined;
-    const level: Level =
-      percent === undefined
-        ? "none"
-        : percent >= 90
-          ? "error"
-          : percent >= 70
-            ? "warning"
-            : "ok";
-    const color =
-      level === "ok"
-        ? theme.text.feedback.success.default
-        : level === "warning"
-          ? theme.text.feedback.warning.default
-          : level === "error"
-            ? theme.text.feedback.error.default
-            : theme.text.subdued;
-    return {
-      percent,
-      color,
-      bar: percent === undefined ? "" : progressBar(percent, BAR_WIDTH),
-    };
-  });
-
-  const countdown = createMemo(() =>
-    formatCountdown(props.now(), props.window?.resetsAt),
-  );
+  const raw = props.window?.percent;
+  const percent = typeof raw === "number" ? Math.round(clampPercent(raw)) : undefined;
+  const level: Level =
+    percent === undefined
+      ? "none"
+      : percent >= 90
+        ? "error"
+        : percent >= 70
+          ? "warning"
+          : "ok";
+  const color =
+    level === "ok"
+      ? theme.text.feedback.success.default
+      : level === "warning"
+        ? theme.text.feedback.warning.default
+        : level === "error"
+          ? theme.text.feedback.error.default
+          : theme.text.subdued;
 
   return (
     <box flexDirection="row" gap={1}>
       <text fg={theme.text.subdued} width={3} wrapMode="none">
         {props.label}
       </text>
-      <text fg={view().color} width={4} wrapMode="none">
-        {view().percent === undefined ? "—" : `${view().percent}%`}
+      <text fg={color} width={4} wrapMode="none">
+        {percent === undefined ? "—" : `${percent}%`}
       </text>
-      <text fg={view().color} wrapMode="none">
-        {view().bar}
+      <text fg={color} wrapMode="none">
+        {percent === undefined ? "" : progressBar(percent, BAR_WIDTH)}
       </text>
       <text fg={theme.text.subdued} wrapMode="none">
-        {countdown()}
+        {formatCountdown(props.now, props.window?.resetsAt)}
       </text>
     </box>
   );
@@ -263,8 +255,37 @@ export default Plugin.define({
           ? false
           : "ctrl+alt+g";
 
-    const [widget, setWidget] = createSignal<WidgetState>({ status: "loading" });
-    const [nowMs, setNow] = createSignal(Date.now());
+    /**
+     * The widget's state lives here, outside Solid: snapshots are passed to
+     * the slot claim by value and the claim is remounted whenever anything
+     * changes. Reactive signal writes do not repaint on the packaged CLI
+     * (anomalyco/opencode#39986), but mount-time JSX evaluation and host
+     * claim mounting do — so this plugin paints by remounting.
+     */
+    let last: WidgetState | null = null;
+    let disposeWidget: (() => void) | null = null;
+
+    function renderWidget(): void {
+      disposeWidget?.();
+      disposeWidget = null;
+      if (last === null) {
+        // Nothing fetched yet — show the loading placeholder so the sidebar
+        // doesn't start out empty.
+        disposeWidget = ctx.ui.slot({
+          append: "sidebar.content",
+          render: () => (
+            <UsageWidget state={{ status: "loading" }} now={Date.now()} theme={ctx.theme} />
+          ),
+        });
+        return;
+      }
+      if (last.status === "no-key") return; // not configurable — hide entirely
+      const state = last;
+      disposeWidget = ctx.ui.slot({
+        append: "sidebar.content",
+        render: () => <UsageWidget state={state} now={Date.now()} theme={ctx.theme} />,
+      });
+    }
 
     // `generation` guards against out-of-order results: a slow fetch finishing
     // after a newer one (or after cleanup) is discarded.
@@ -299,11 +320,8 @@ export default Plugin.define({
       if (!key) {
         // Not an operational error — just nothing to show until Go is set up.
         refreshStartedAt = 0;
-        setWidget((prev) => ({
-          status: "no-key",
-          usage: prev.usage,
-          at: prev.at,
-        }));
+        last = { status: "no-key", usage: last?.usage, at: last?.at };
+        renderWidget();
         return;
       }
 
@@ -312,11 +330,8 @@ export default Plugin.define({
         if (current !== generation) return;
         notified = null;
         refreshStartedAt = 0;
-        setWidget({
-          status: "ok",
-          usage,
-          at: Date.now(),
-        });
+        last = { status: "ok", usage, at: Date.now() };
+        renderWidget();
       } catch (error) {
         if (current !== generation) return;
         const message =
@@ -328,20 +343,13 @@ export default Plugin.define({
         notify(message);
         // Keep showing the last known values when a refresh fails.
         refreshStartedAt = 0;
-        setWidget((prev) => ({
-          status: "error",
-          error: message,
-          usage: prev.usage,
-          at: prev.at,
-        }));
+        last = { status: "error", error: message, usage: last?.usage, at: last?.at };
+        renderWidget();
       }
     }
 
     // The refresh command lives on its own `app`-slot claim (mounted for the
-    // whole TUI lifetime), not inside the sidebar widget — `keymap.layer` can
-    // only run inside the TUI component tree, and `sidebar.content` only
-    // mounts on session screens. Registering there kept the command out of
-    // the palette on other screens.
+    // whole TUI lifetime), not inside the sidebar widget.
     const disposeCommands = ctx.ui.slot({
       append: "app",
       render: () => (
@@ -353,9 +361,12 @@ export default Plugin.define({
       ),
     });
 
+    renderWidget();
     void refresh();
     const timer = setInterval(() => void refresh(), refreshMs);
-    const tick = setInterval(() => setNow(Date.now()), TICK_MS);
+    // Remounting with a fresh `now` keeps the "…ago" label and countdowns
+    // moving without relying on reactive repaints.
+    const tick = setInterval(() => renderWidget(), TICK_MS);
 
     // Last-resort safety net: if a refresh ever fails to settle (a pathological
     // runtime stall beyond the fetch deadline), force the widget out of the
@@ -367,25 +378,16 @@ export default Plugin.define({
       refreshStartedAt = 0;
       const message = "OpenCode Go usage refresh timed out";
       notify(message);
-      setWidget((prev) => ({
-        status: "error",
-        error: message,
-        usage: prev.usage,
-        at: prev.at,
-      }));
+      last = { status: "error", error: message, usage: last?.usage, at: last?.at };
+      renderWidget();
     }, WATCHDOG_MS);
-
-    const dispose = ctx.ui.slot({
-      append: "sidebar.content",
-      render: () => <UsageWidget widget={widget} now={nowMs} theme={ctx.theme} />,
-    });
 
     return () => {
       generation++;
       clearInterval(timer);
       clearInterval(tick);
       clearInterval(watchdog);
-      dispose();
+      disposeWidget?.();
       disposeCommands();
     };
   },
