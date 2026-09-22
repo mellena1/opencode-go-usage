@@ -1,6 +1,6 @@
 {
   "name": "@mellena1/opencode-go-usage",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "OpenCode v2 TUI plugin that shows your OpenCode Go subscription usage (5h / weekly / monthly windows) in the sidebar, fetched from the official /zen/go/v1/usage API.",
   "type": "module",
   "license": "MIT",
@@ -44,17 +44,17 @@
     "@babel/core": "^7.29.1"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "beta"
+    "@opencode/plugin": "^2.0.14"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.5.9",
-    "@opentui/solid": ">=0.5.9",
+    "@opentui/core": ">=0.5.10",
+    "@opentui/solid": ">=0.5.10",
     "solid-js": ">=1.9.0"
   },
   "devDependencies": {
-    "@opencode-ai/theme": "0.0.0-beta-18743",
-    "@opentui/core": "0.5.9",
-    "@opentui/solid": "0.5.9",
+    "@opencode/theme": "^2.0.14",
+    "@opentui/core": "0.5.10",
+    "@opentui/solid": "0.5.10",
     "@types/bun": "^1.4.0",
     "@types/node": "^24.0.0",
     "solid-js": "1.9.15",

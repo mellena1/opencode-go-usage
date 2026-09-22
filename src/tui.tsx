@@ -1,8 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 import { For, type JSX } from "solid-js";
-import { Plugin } from "@opencode-ai/plugin/tui";
-import type { Context } from "@opencode-ai/plugin/tui/context";
-import type { ResolvedTheme } from "@opencode-ai/theme/tui";
+import { Plugin } from "@opencode/plugin/tui";
+import type { Context } from "@opencode/plugin/tui/context";
+import type { ResolvedTheme } from "@opencode/theme/tui";
 import {
   DEFAULT_TIMEOUT_MS,
   UsageError,
@@ -111,18 +111,18 @@ function UsageWidget(props: {
   })();
 
   const dot = (() => {
-    if (s.status === "loading") return theme.text.subdued;
-    if (s.status === "no-key") return theme.text.subdued;
-    if (s.status === "error" && !usage) return theme.text.feedback.error.default;
+    if (s.status === "loading") return theme.text.muted;
+    if (s.status === "no-key") return theme.text.muted;
+    if (s.status === "error" && !usage) return theme.text.feedback.error.base;
     switch (level) {
       case "ok":
-        return theme.text.feedback.success.default;
+        return theme.text.feedback.success.base;
       case "warning":
-        return theme.text.feedback.warning.default;
+        return theme.text.feedback.warning.base;
       case "error":
-        return theme.text.feedback.error.default;
+        return theme.text.feedback.error.base;
       default:
-        return theme.text.subdued;
+        return theme.text.muted;
     }
   })();
 
@@ -138,7 +138,7 @@ function UsageWidget(props: {
     <box>
       <box flexDirection="row" gap={1}>
         <text fg={dot}>●</text>
-        <text fg={theme.text.default}>
+        <text fg={theme.text.base}>
           <b>Go usage</b>
         </text>
       </box>
@@ -146,7 +146,7 @@ function UsageWidget(props: {
         {(window) => <WindowRow label={window.label} window={usage?.[window.key]} theme={theme} />}
       </For>
       {statusLine !== "" ? (
-        <text fg={theme.text.subdued} wrapMode="none">
+        <text fg={theme.text.muted} wrapMode="none">
           {statusLine}
         </text>
       ) : null}
@@ -173,16 +173,16 @@ function WindowRow(props: {
           : "ok";
   const color =
     level === "ok"
-      ? theme.text.feedback.success.default
+      ? theme.text.feedback.success.base
       : level === "warning"
-        ? theme.text.feedback.warning.default
+        ? theme.text.feedback.warning.base
         : level === "error"
-          ? theme.text.feedback.error.default
-          : theme.text.subdued;
+          ? theme.text.feedback.error.base
+          : theme.text.muted;
 
   return (
     <box flexDirection="row" gap={1}>
-      <text fg={theme.text.subdued} width={3} wrapMode="none">
+      <text fg={theme.text.muted} width={3} wrapMode="none">
         {props.label}
       </text>
       <text fg={color} width={4} wrapMode="none">
@@ -191,7 +191,7 @@ function WindowRow(props: {
       <text fg={color} wrapMode="none">
         {percent === undefined ? "" : progressBar(percent, BAR_WIDTH)}
       </text>
-      <text fg={theme.text.subdued} wrapMode="none">
+      <text fg={theme.text.muted} wrapMode="none">
         {formatCountdown(Date.now(), props.window?.resetsAt)}
       </text>
     </box>
