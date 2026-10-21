@@ -8,6 +8,7 @@ import {
   clampPercent,
   fetchUsage,
   resolveApiKey,
+  resolveExplicitApiKey,
 } from "../src/usage.js";
 
 const originalFetch = globalThis.fetch;
@@ -123,6 +124,27 @@ describe("resolveApiKey", () => {
   test("returns undefined when the auth file does not exist", async () => {
     process.env.OPENCODE_AUTH_JSON = join(tmpdir(), "no-such-auth.json");
     expect(await resolveApiKey()).toBeUndefined();
+  });
+});
+
+describe("resolveExplicitApiKey", () => {
+  test("prefers the explicit plugin option without touching auth.json", async () => {
+    await withAuthFile({ "opencode-go": { key: "stale-file-key" } });
+    expect(resolveExplicitApiKey({ apiKey: "  from-option  " })).toEqual({
+      apiKey: "from-option",
+      source: "option",
+    });
+  });
+
+  test("reads the env var without touching auth.json", async () => {
+    await withAuthFile({ "opencode-go": { key: "stale-file-key" } });
+    process.env.OPENCODE_API_KEY = "from-env";
+    expect(resolveExplicitApiKey()).toEqual({ apiKey: "from-env", source: "env" });
+  });
+
+  test("returns undefined when only the auth file has a key", async () => {
+    await withAuthFile({ "opencode-go": { key: "stale-file-key" } });
+    expect(resolveExplicitApiKey()).toBeUndefined();
   });
 });
 

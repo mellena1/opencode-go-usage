@@ -59,13 +59,17 @@ windows in the sidebar's `sidebar.content` slot.
 
 ### API key resolution
 
-The plugin finds your Go key in the same order opencode does:
+Explicit keys stay local to the TUI and are fetched directly:
 
 1. `options.apiKey` (explicit plugin option — always wins)
 2. `OPENCODE_API_KEY` environment variable
-3. `~/.local/share/opencode/auth.json` (or the platform equivalent) — the file
-   `opencode auth login` writes; the `opencode-go` entry is preferred over the
-   legacy `opencode` entry
+
+Otherwise the TUI asks the server over RPC, and the server resolves the live
+credential through the plugin SDK (`integration.connection.active("opencode-go")`
++ `resolve`), falling back to server-env `OPENCODE_API_KEY` and then the legacy
+`~/.local/share/opencode/auth.json` file (`opencode-go`, then `opencode`). The
+TUI never reads auth.json itself — that file can hold a stale key while
+inference already uses the live one, which previously surfaced as HTTP 401.
 
 `HTTP 401` means the key was rejected; `HTTP 403 EntitlementError` means the
 key is valid but has no Go subscription. Both are surfaced in the widget. When
@@ -128,9 +132,10 @@ straight at the TypeScript sources, so there is no build step.
 
 | File | Purpose |
 |------|---------|
-| `src/tui.tsx` | TUI plugin: `sidebar.content` widget, refresh command/keybinding, polling loop, and state handling |
-| `src/index.ts` | No-op server plugin (with `tui: true`) so the host resolves the package and auto-loads `src/tui.tsx` |
-| `src/usage.ts` | Usage API client (`/zen/go/v1/usage`) and Go API-key resolution (option → env → auth.json) |
+| `src/tui.tsx` | TUI plugin: `sidebar.content` widget, refresh command/keybinding, polling loop, and state handling (explicit keys fetch directly, otherwise calls the server RPC) |
+| `src/index.ts` | Server plugin: resolves the live `opencode-go` credential via the SDK and serves usage over the `getUsage` RPC |
+| `src/rpc.ts` | RPC contract (`opencode-go-usage.getUsage`) shared by the server and the TUI |
+| `src/usage.ts` | Usage API client (`/zen/go/v1/usage`) and Go API-key resolution (explicit option → env; legacy auth.json file only as a server fallback) |
 | `src/format.ts` | Terse formatting helpers: reset countdowns, relative times, and the progress bar |
 | `test/` | `bun test` unit tests for `usage.ts` and `format.ts` (parsing, key resolution, formatters) |
 

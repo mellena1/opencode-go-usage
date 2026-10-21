@@ -9,9 +9,11 @@ import {
   clampPercent,
   fetchUsage,
   resolveApiKey,
+  resolveExplicitApiKey,
   type GoUsage,
   type UsageWindow,
 } from "./usage.js";
+import { GoUsageRpc } from "./rpc.js";
 import { formatCountdown, progressBar } from "./format.js";
 
 const BAR_WIDTH = 12;
@@ -205,6 +207,34 @@ function refreshIntervalMs(value: unknown): number {
   return Math.max(MIN_REFRESH_SECONDS, Math.round(value)) * 1000;
 }
 
+function rpcType(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const type = (error as Record<string, unknown>).type;
+  return typeof type === "string" ? type : undefined;
+}
+
+function isRpcUnavailable(error: unknown): boolean {
+  const type = rpcType(error);
+  return (
+    type === "rpc.unavailable" ||
+    type === "rpc.method_not_found" ||
+    type === "rpc.internal"
+  );
+}
+
+function isRpcNoKey(error: unknown): boolean {
+  return rpcType(error) === "no-key";
+}
+
+function rpcMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message) return message;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
 export default Plugin.define({
   id: "opencode-go-usage",
   setup: (ctx) => {
@@ -278,6 +308,66 @@ export default Plugin.define({
       const current = ++generation;
       refreshStartedAt = Date.now();
 
+      // Explicit option/env keys stay local: fetch directly without RPC so the
+      // secret never traverses the client↔server boundary. Otherwise ask the
+      // server, which resolves the live integration credential via the SDK.
+      const explicit = resolveExplicitApiKey(options);
+      if (explicit) {
+        try {
+          const usage = await fetchUsage(explicit.apiKey, { baseUrl });
+          if (current !== generation) return;
+          notified = null;
+          refreshStartedAt = 0;
+          last = { status: "ok", usage };
+          renderWidget();
+        } catch (error) {
+          if (current !== generation) return;
+          const message =
+            error instanceof UsageError
+              ? error.message
+              : error instanceof Error
+                ? error.message
+                : String(error);
+          notify(message);
+          refreshStartedAt = 0;
+          last = { status: "error", error: message, usage: last?.usage };
+          renderWidget();
+        }
+        return;
+      }
+
+      try {
+        const rpc = ctx.client.rpc(GoUsageRpc);
+        // JSON-schema RPC output is untyped; the server returns GoUsage.
+        const usage = (await rpc.getUsage(baseUrl ? { baseUrl } : {})) as GoUsage;
+        if (current !== generation) return;
+        notified = null;
+        refreshStartedAt = 0;
+        last = { status: "ok", usage };
+        renderWidget();
+        return;
+      } catch (error) {
+        if (current !== generation) return;
+        if (isRpcUnavailable(error)) {
+          await refreshLegacy(current);
+          return;
+        }
+        if (isRpcNoKey(error)) {
+          refreshStartedAt = 0;
+          last = { status: "no-key" };
+          renderWidget();
+          return;
+        }
+        const message = rpcMessage(error);
+        notify(message);
+        refreshStartedAt = 0;
+        last = { status: "error", error: message, usage: last?.usage };
+        renderWidget();
+        return;
+      }
+    }
+
+    async function refreshLegacy(current: number): Promise<void> {
       let key: Awaited<ReturnType<typeof resolveApiKey>>;
       try {
         key = await resolveApiKey(options);
@@ -287,7 +377,6 @@ export default Plugin.define({
       if (current !== generation) return;
 
       if (!key) {
-        // Not an operational error — just nothing to show until Go is set up.
         refreshStartedAt = 0;
         last = { status: "no-key" };
         renderWidget();
@@ -310,7 +399,6 @@ export default Plugin.define({
               ? error.message
               : String(error);
         notify(message);
-        // Keep showing the last known values when a refresh fails.
         refreshStartedAt = 0;
         last = { status: "error", error: message, usage: last?.usage };
         renderWidget();

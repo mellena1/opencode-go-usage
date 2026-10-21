@@ -64,13 +64,15 @@ export function clampPercent(value: number): number {
 }
 
 /**
- * Resolve the OpenCode Go API key, mirroring opencode's own resolution order:
- * plugin option → `OPENCODE_API_KEY` env → auth.json (`opencode-go`, then
- * `opencode` fallback).
+ * Resolve an explicitly configured key: plugin option → `OPENCODE_API_KEY`
+ * env. Skips auth.json so callers with direct access to the active credential
+ * (the TUI process env, explicit options) never touch the legacy file, which
+ * can hold a stale key while `opencode auth export` already serves the live
+ * one to inference.
  */
-export async function resolveApiKey(
+export function resolveExplicitApiKey(
   options: Readonly<Record<string, any>> = {},
-): Promise<ResolvedKey | undefined> {
+): ResolvedKey | undefined {
   const fromOption = options.apiKey;
   if (typeof fromOption === "string" && fromOption.trim()) {
     return { apiKey: fromOption.trim(), source: "option" };
@@ -80,6 +82,22 @@ export async function resolveApiKey(
   if (fromEnv && fromEnv.trim()) {
     return { apiKey: fromEnv.trim(), source: "env" };
   }
+
+  return undefined;
+}
+
+/**
+ * Resolve the OpenCode Go API key, mirroring opencode's own resolution order:
+ * plugin option → `OPENCODE_API_KEY` env → auth.json (`opencode-go`, then
+ * `opencode` fallback). Prefer the server integration credential
+ * (`ctx.integration.connection.resolve`) over this file read wherever the
+ * plugin SDK is available — auth.json can be stale (see resolveExplicitApiKey).
+ */
+export async function resolveApiKey(
+  options: Readonly<Record<string, any>> = {},
+): Promise<ResolvedKey | undefined> {
+  const explicit = resolveExplicitApiKey(options);
+  if (explicit) return explicit;
 
   const auth = await readAuthFile();
   if (auth) {
