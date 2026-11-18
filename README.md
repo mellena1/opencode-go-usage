@@ -27,8 +27,8 @@ mo  94%  ███████████░ 3d
   is abandoned after 15 seconds and treated like any other refresh failure, so
   the widget never sits on "Loading…" forever.
 - If OpenCode Go isn't configured on this machine (no key in `options`, the
-  `OPENCODE_API_KEY` env var, or auth.json), the widget **hides itself**
-  entirely instead of showing an error.
+  `OPENCODE_API_KEY` env var, or the server's credential store), the widget
+  **hides itself** entirely instead of showing an error.
 - `Go usage · refresh` command (command palette, default binding
   `ctrl+alt+g`) forces an immediate refresh.
 
@@ -66,10 +66,15 @@ Explicit keys stay local to the TUI and are fetched directly:
 
 Otherwise the TUI asks the server over RPC, and the server resolves the live
 credential through the plugin SDK (`integration.connection.active("opencode-go")`
-+ `resolve`), falling back to server-env `OPENCODE_API_KEY` and then the legacy
-`~/.local/share/opencode/auth.json` file (`opencode-go`, then `opencode`). The
-TUI never reads auth.json itself — that file can hold a stale key while
-inference already uses the live one, which previously surfaced as HTTP 401.
++ `resolve`), falling back to server-env `OPENCODE_API_KEY`.
+
+The plugin never reads `~/.local/share/opencode/auth.json`. In OpenCode v2 that
+file is not updated by `opencode auth login` (credentials live in the
+credential store instead), so it usually holds an old key; fetching with it
+returned HTTP 401 and showed a false "key was rejected" error at startup even
+though inference was working. Because the TUI can mount before the server
+plugin registers its RPC method, the first refresh also retries briefly
+instead of treating that startup race as a credential failure.
 
 `HTTP 401` means the key was rejected; `HTTP 403 EntitlementError` means the
 key is valid but has no Go subscription. Both are surfaced in the widget. When
@@ -135,7 +140,7 @@ straight at the TypeScript sources, so there is no build step.
 | `src/tui.tsx` | TUI plugin: `sidebar.content` widget, refresh command/keybinding, polling loop, and state handling (explicit keys fetch directly, otherwise calls the server RPC) |
 | `src/index.ts` | Server plugin: resolves the live `opencode-go` credential via the SDK and serves usage over the `getUsage` RPC |
 | `src/rpc.ts` | RPC contract (`opencode-go-usage.getUsage`) shared by the server and the TUI |
-| `src/usage.ts` | Usage API client (`/zen/go/v1/usage`) and Go API-key resolution (explicit option → env; legacy auth.json file only as a server fallback) |
+| `src/usage.ts` | Usage API client (`/zen/go/v1/usage`) and explicit Go API-key resolution (plugin option → env; never auth.json) |
 | `src/format.ts` | Terse formatting helpers: reset countdowns, relative times, and the progress bar |
 | `test/` | `bun test` unit tests for `usage.ts` and `format.ts` (parsing, key resolution, formatters) |
 

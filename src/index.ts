@@ -1,13 +1,14 @@
 import { Plugin } from "@opencode/plugin";
-import { UsageError, fetchUsage, resolveApiKey } from "./usage.js";
+import { UsageError, fetchUsage, resolveExplicitApiKey } from "./usage.js";
 import { GoUsageRpc } from "./rpc.js";
 
 /**
  * Server entry: resolves the live `opencode-go` credential through the plugin
  * SDK (`ctx.integration.connection.active` + `resolve`) and serves usage over
- * RPC so the TUI never reads the legacy auth.json file directly. That file can
- * hold a stale key while inference already uses the live one from
- * `opencode auth export`, which previously surfaced as HTTP 401 in the widget.
+ * RPC so the plugin never reads the legacy auth.json file. In OpenCode v2 that
+ * file is not updated by `opencode auth login`, so its key is often stale and
+ * using it surfaced as a false HTTP 401 in the widget even though inference was
+ * working.
  */
 export default Plugin.define({
   id: "opencode-go-usage",
@@ -47,8 +48,7 @@ export default Plugin.define({
         }
 
         if (!apiKey) {
-          const fallback = await resolveApiKey(options).catch(() => undefined);
-          apiKey = fallback?.apiKey;
+          apiKey = resolveExplicitApiKey(options)?.apiKey;
         }
 
         if (!apiKey) {

@@ -8,7 +8,6 @@ import {
   UsageError,
   clampPercent,
   fetchUsage,
-  resolveApiKey,
   resolveExplicitApiKey,
   type GoUsage,
   type UsageWindow,
@@ -21,6 +20,12 @@ const DEFAULT_REFRESH_SECONDS = 300; // 5 minutes
 const MIN_REFRESH_SECONDS = 30;
 const WATCHDOG_MS = 10_000; // how often the refresh watchdog re-checks
 const WATCHDOG_SLACK_MS = 5_000; // grace beyond the fetch deadline before a refresh is declared wedged
+/**
+ * The TUI can mount before the server plugin has registered its RPC method, so
+ * the first refresh of a session may legitimately see `rpc.unavailable`. Retry
+ * briefly before concluding the server side is missing.
+ */
+const RPC_UNAVAILABLE_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
 
 const WINDOW_KEYS: ReadonlyArray<{ key: keyof GoUsage; label: string }> = [
   { key: "rolling", label: "5h" },
@@ -213,17 +218,18 @@ function rpcType(error: unknown): string | undefined {
   return typeof type === "string" ? type : undefined;
 }
 
-function isRpcUnavailable(error: unknown): boolean {
-  const type = rpcType(error);
-  return (
-    type === "rpc.unavailable" ||
-    type === "rpc.method_not_found" ||
-    type === "rpc.internal"
-  );
-}
-
 function isRpcNoKey(error: unknown): boolean {
   return rpcType(error) === "no-key";
+}
+
+function isRpcStarting(error: unknown): boolean {
+  // Only "unavailable" means the method may still be registering: the other
+  // RPC error types describe a permanent mismatch with the server plugin.
+  return rpcType(error) === "rpc.unavailable";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function rpcMessage(error: unknown): string {
@@ -337,9 +343,7 @@ export default Plugin.define({
       }
 
       try {
-        const rpc = ctx.client.rpc(GoUsageRpc);
-        // JSON-schema RPC output is untyped; the server returns GoUsage.
-        const usage = (await rpc.getUsage(baseUrl ? { baseUrl } : {})) as GoUsage;
+        const usage = await fetchUsageViaRpc(current);
         if (current !== generation) return;
         notified = null;
         refreshStartedAt = 0;
@@ -348,11 +352,11 @@ export default Plugin.define({
         return;
       } catch (error) {
         if (current !== generation) return;
-        if (isRpcUnavailable(error)) {
-          await refreshLegacy(current);
-          return;
-        }
-        if (isRpcNoKey(error)) {
+        // `no-key` and a server that never registered the method both mean
+        // "there is no credential to show yet" — hide the widget. Never fall
+        // back to auth.json: in v2 it holds a stale key, and fetching with it
+        // produced a false "rejected (HTTP 401)" error at startup.
+        if (isRpcNoKey(error) || isRpcStarting(error)) {
           refreshStartedAt = 0;
           last = { status: "no-key" };
           renderWidget();
@@ -367,41 +371,26 @@ export default Plugin.define({
       }
     }
 
-    async function refreshLegacy(current: number): Promise<void> {
-      let key: Awaited<ReturnType<typeof resolveApiKey>>;
-      try {
-        key = await resolveApiKey(options);
-      } catch {
-        key = undefined;
-      }
-      if (current !== generation) return;
-
-      if (!key) {
-        refreshStartedAt = 0;
-        last = { status: "no-key" };
-        renderWidget();
-        return;
-      }
-
-      try {
-        const usage = await fetchUsage(key.apiKey, { baseUrl });
-        if (current !== generation) return;
-        notified = null;
-        refreshStartedAt = 0;
-        last = { status: "ok", usage };
-        renderWidget();
-      } catch (error) {
-        if (current !== generation) return;
-        const message =
-          error instanceof UsageError
-            ? error.message
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        notify(message);
-        refreshStartedAt = 0;
-        last = { status: "error", error: message, usage: last?.usage };
-        renderWidget();
+    /**
+     * Ask the server for usage over RPC. The TUI can mount before the server
+     * plugin finishes registering the method, so retry `rpc.unavailable` a few
+     * times instead of treating the very first refresh of a session as a hard
+     * failure.
+     */
+    async function fetchUsageViaRpc(current: number): Promise<GoUsage> {
+      const rpc = ctx.client.rpc(GoUsageRpc);
+      const input = baseUrl ? { baseUrl } : {};
+      for (let attempt = 0; ; attempt++) {
+        try {
+          // JSON-schema RPC output is untyped; the server returns GoUsage.
+          return (await rpc.getUsage(input)) as GoUsage;
+        } catch (error) {
+          if (!isRpcStarting(error) || attempt >= RPC_UNAVAILABLE_RETRY_DELAYS_MS.length) {
+            throw error;
+          }
+          await delay(RPC_UNAVAILABLE_RETRY_DELAYS_MS[attempt] ?? 3_000);
+          if (current !== generation) throw error;
+        }
       }
     }
 

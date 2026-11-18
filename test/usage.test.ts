@@ -1,13 +1,9 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   DEFAULT_BASE_URL,
   UsageError,
   clampPercent,
   fetchUsage,
-  resolveApiKey,
   resolveExplicitApiKey,
 } from "../src/usage.js";
 
@@ -21,25 +17,9 @@ function installFetch(handler: FetchHandler): void {
     handler(url, init)) as unknown as typeof fetch;
 }
 
-let tempDir: string | undefined;
-
-async function withAuthFile(contents: object | string): Promise<string> {
-  tempDir = await mkdtemp(join(tmpdir(), "opencode-go-usage-"));
-  const file = join(tempDir, "auth.json");
-  const body = typeof contents === "string" ? contents : JSON.stringify(contents);
-  await writeFile(file, body);
-  process.env.OPENCODE_AUTH_JSON = file;
-  return file;
-}
-
-afterEach(async () => {
+afterEach(() => {
   globalThis.fetch = originalFetch;
   delete process.env.OPENCODE_API_KEY;
-  delete process.env.OPENCODE_AUTH_JSON;
-  if (tempDir) {
-    await rm(tempDir, { recursive: true, force: true });
-    tempDir = undefined;
-  }
 });
 
 describe("clampPercent", () => {
@@ -61,89 +41,33 @@ describe("clampPercent", () => {
   });
 });
 
-describe("resolveApiKey", () => {
-  test("prefers the explicit plugin option", async () => {
-    const resolved = await resolveApiKey({ apiKey: "  from-option  " });
-    expect(resolved).toEqual({ apiKey: "from-option", source: "option" });
-  });
-
-  test("ignores a non-string option and falls through", async () => {
-    process.env.OPENCODE_API_KEY = "from-env";
-    const resolved = await resolveApiKey({ apiKey: 42 });
-    expect(resolved).toEqual({ apiKey: "from-env", source: "env" });
-  });
-
-  test("reads the OPENCODE_API_KEY environment variable", async () => {
-    process.env.OPENCODE_API_KEY = "  from-env ";
-    const resolved = await resolveApiKey();
-    expect(resolved).toEqual({ apiKey: "from-env", source: "env" });
-  });
-
-  test("prefers the opencode-go entry over the legacy opencode entry", async () => {
-    await withAuthFile({
-      "opencode-go": { key: "go-key" },
-      opencode: { key: "legacy-key" },
-    });
-    const resolved = await resolveApiKey();
-    expect(resolved).toEqual({ apiKey: "go-key", source: "auth" });
-  });
-
-  test("falls back to the legacy opencode auth entry", async () => {
-    await withAuthFile({ opencode: { key: "legacy-key" } });
-    const resolved = await resolveApiKey();
-    expect(resolved).toEqual({ apiKey: "legacy-key", source: "auth" });
-  });
-
-  test("accepts the apiKey field name in auth entries", async () => {
-    await withAuthFile({ opencode: { apiKey: "legacy-key" } });
-    const resolved = await resolveApiKey();
-    expect(resolved).toEqual({ apiKey: "legacy-key", source: "auth" });
-  });
-
-  test("returns undefined when no key exists anywhere", async () => {
-    await withAuthFile({});
-    expect(await resolveApiKey()).toBeUndefined();
-  });
-
-  test("returns undefined for a malformed auth file", async () => {
-    await withAuthFile("not json");
-    expect(await resolveApiKey()).toBeUndefined();
-  });
-
-  test("returns undefined when an auth entry has no key", async () => {
-    await withAuthFile({ opencode: { type: "Bearer" } });
-    expect(await resolveApiKey()).toBeUndefined();
-  });
-
-  test("ignores whitespace-only keys", async () => {
-    process.env.OPENCODE_API_KEY = "   ";
-    await withAuthFile({ opencode: { key: "   " } });
-    expect(await resolveApiKey()).toBeUndefined();
-  });
-
-  test("returns undefined when the auth file does not exist", async () => {
-    process.env.OPENCODE_AUTH_JSON = join(tmpdir(), "no-such-auth.json");
-    expect(await resolveApiKey()).toBeUndefined();
-  });
-});
-
 describe("resolveExplicitApiKey", () => {
-  test("prefers the explicit plugin option without touching auth.json", async () => {
-    await withAuthFile({ "opencode-go": { key: "stale-file-key" } });
+  test("prefers the explicit plugin option", () => {
     expect(resolveExplicitApiKey({ apiKey: "  from-option  " })).toEqual({
       apiKey: "from-option",
       source: "option",
     });
   });
 
-  test("reads the env var without touching auth.json", async () => {
-    await withAuthFile({ "opencode-go": { key: "stale-file-key" } });
+  test("ignores a non-string option and falls through to the env var", () => {
     process.env.OPENCODE_API_KEY = "from-env";
+    expect(resolveExplicitApiKey({ apiKey: 42 })).toEqual({
+      apiKey: "from-env",
+      source: "env",
+    });
+  });
+
+  test("reads the OPENCODE_API_KEY environment variable", () => {
+    process.env.OPENCODE_API_KEY = "  from-env ";
     expect(resolveExplicitApiKey()).toEqual({ apiKey: "from-env", source: "env" });
   });
 
-  test("returns undefined when only the auth file has a key", async () => {
-    await withAuthFile({ "opencode-go": { key: "stale-file-key" } });
+  test("returns undefined when no key is configured", () => {
+    expect(resolveExplicitApiKey()).toBeUndefined();
+  });
+
+  test("ignores whitespace-only keys", () => {
+    process.env.OPENCODE_API_KEY = "   ";
     expect(resolveExplicitApiKey()).toBeUndefined();
   });
 });

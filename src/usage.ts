@@ -1,7 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
 /**
  * OpenCode Go quota client.
  *
@@ -34,7 +30,7 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
 /** A resolved API key plus where it came from (for diagnostics). */
 export interface ResolvedKey {
   apiKey: string;
-  source: "option" | "env" | "auth";
+  source: "option" | "env";
 }
 
 export type UsageErrorKind =
@@ -65,10 +61,14 @@ export function clampPercent(value: number): number {
 
 /**
  * Resolve an explicitly configured key: plugin option → `OPENCODE_API_KEY`
- * env. Skips auth.json so callers with direct access to the active credential
- * (the TUI process env, explicit options) never touch the legacy file, which
- * can hold a stale key while `opencode auth export` already serves the live
- * one to inference.
+ * env.
+ *
+ * Deliberately never reads `auth.json`. In OpenCode v2 that file is legacy:
+ * `opencode auth login` stores the live credential in the credential store
+ * (served to plugins by `ctx.integration.connection.resolve`), so auth.json
+ * keeps whatever key was last written by v1. Sending it to the usage endpoint
+ * returns HTTP 401 and used to surface as a false "key was rejected" error at
+ * startup, even though inference was using a working key.
  */
 export function resolveExplicitApiKey(
   options: Readonly<Record<string, any>> = {},
@@ -81,38 +81,6 @@ export function resolveExplicitApiKey(
   const fromEnv = process.env.OPENCODE_API_KEY;
   if (fromEnv && fromEnv.trim()) {
     return { apiKey: fromEnv.trim(), source: "env" };
-  }
-
-  return undefined;
-}
-
-/**
- * Resolve the OpenCode Go API key, mirroring opencode's own resolution order:
- * plugin option → `OPENCODE_API_KEY` env → auth.json (`opencode-go`, then
- * `opencode` fallback). Prefer the server integration credential
- * (`ctx.integration.connection.resolve`) over this file read wherever the
- * plugin SDK is available — auth.json can be stale (see resolveExplicitApiKey).
- */
-export async function resolveApiKey(
-  options: Readonly<Record<string, any>> = {},
-): Promise<ResolvedKey | undefined> {
-  const explicit = resolveExplicitApiKey(options);
-  if (explicit) return explicit;
-
-  const auth = await readAuthFile();
-  if (auth) {
-    // Both keys are Go-compatible; the dedicated `opencode-go` entry wins.
-    for (const provider of ["opencode-go", "opencode"] as const) {
-      const entry = auth[provider];
-      if (!entry || typeof entry !== "object") continue;
-      const key =
-        typeof entry.key === "string"
-          ? entry.key
-          : typeof entry.apiKey === "string"
-            ? entry.apiKey
-            : undefined;
-      if (key && key.trim()) return { apiKey: key.trim(), source: "auth" };
-    }
   }
 
   return undefined;
@@ -291,49 +259,4 @@ function assertSecureBaseUrl(baseUrl: string): string {
     "config",
     "baseUrl must use https; http is only allowed for localhost/loopback",
   );
-}
-
-type AuthEntry = { key?: unknown; apiKey?: unknown; [key: string]: unknown };
-type AuthFile = Record<string, AuthEntry>;
-
-/**
- * The credential file opencode's `auth login` writes to:
- * `~/.local/share/opencode/auth.json` (Linux), `~/Library/Application
- * Support/opencode/auth.json` (macOS), `%LOCALAPPDATA%\opencode\auth.json`
- * (Windows), or `$OPENCODE_AUTH_JSON` when set.
- */
-function authFilePath(): string | undefined {
-  if (process.env.OPENCODE_AUTH_JSON?.trim()) {
-    return process.env.OPENCODE_AUTH_JSON.trim();
-  }
-  const home = homedir();
-  switch (process.platform) {
-    case "win32":
-      return join(
-        process.env.LOCALAPPDATA ?? join(home, "AppData", "Local"),
-        "opencode",
-        "auth.json",
-      );
-    case "darwin":
-      return join(home, "Library", "Application Support", "opencode", "auth.json");
-    default:
-      return join(
-        process.env.XDG_DATA_HOME?.trim() || join(home, ".local", "share"),
-        "opencode",
-        "auth.json",
-      );
-  }
-}
-
-async function readAuthFile(): Promise<AuthFile | undefined> {
-  const file = authFilePath();
-  if (!file) return undefined;
-  try {
-    const raw = await readFile(file, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return undefined;
-    return parsed as AuthFile;
-  } catch {
-    return undefined;
-  }
 }
